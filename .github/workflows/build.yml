@@ -16,6 +16,9 @@ jobs:
       NICE: 0
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Host tools
         run: sudo apt-get update && sudo apt-get install -y ninja-build libarchive-tools brotli
       - name: Cache emsdk
@@ -32,6 +35,8 @@ jobs:
           key: deps-st-${{ hashFiles('scripts/pin.sh', 'deps/**', 'scripts/toolchain.sh') }}
       - name: Build
         run: scripts/build.sh
+      - name: Test against Bambu Studio's own output
+        run: node tests/run.mjs dist st
       - uses: actions/upload-artifact@v4
         with:
           name: bambu-engine-st

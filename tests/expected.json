@@ -1,0 +1,19 @@
+{
+  "reference": "Bambu Studio 2.8.2.61 (v02.08.02.61), its command line on macOS 26 (arm64): BambuStudio --slice <plate> --outputdir <dir> <input>",
+  "cases": [
+    {
+      "name": "cube",
+      "input": "inputs/cube.3mf",
+      "what": "20 mm cube, P1S 0.4, 0.20mm Standard, full Bambu configuration in the 3MF",
+      "plate": 0,
+      "outputs": { "plate_1.gcode": "c7987f4a79990932202cc27363d871b78928ec438d097317977be769e91895cb" }
+    },
+    {
+      "name": "twocolour",
+      "input": "inputs/twocolour.3mf",
+      "what": "two 20 mm cubes on AMS slots 1 and 2: flush, prime tower, 100 tool changes",
+      "plate": 0,
+      "outputs": { "plate_1.gcode": "fc3b8702cea4fc00d8efee37be5efbbbfe6290d5928fbaf85c87d215ec2a8308" }
+    }
+  ]
+}
