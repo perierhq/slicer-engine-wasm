@@ -1,0 +1,17 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          if [ -x scripts/build.sh ]; then scripts/build.sh; else echo "scripts/build.sh lands with the spike"; fi
