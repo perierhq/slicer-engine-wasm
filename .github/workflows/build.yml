@@ -10,8 +10,29 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      ORCA_WASM_ROOT: ${{ github.workspace }}/work
+      JOBS: 4
+      NICE: 0
     steps:
       - uses: actions/checkout@v4
+      - name: Host tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libarchive-tools brotli
+      - name: Cache emsdk
+        uses: actions/cache@v4
+        with:
+          path: work/emsdk
+          key: emsdk-${{ hashFiles('scripts/pin.sh') }}
+      - name: Cache dependency prefix
+        uses: actions/cache@v4
+        with:
+          path: |
+            work/deps-src
+            work/prefix-st
+          key: deps-st-${{ hashFiles('scripts/pin.sh', 'deps/**', 'scripts/toolchain.sh') }}
       - name: Build
-        run: |
-          if [ -x scripts/build.sh ]; then scripts/build.sh; else echo "scripts/build.sh lands with the spike"; fi
+        run: scripts/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bambu-engine-st
+          path: dist/

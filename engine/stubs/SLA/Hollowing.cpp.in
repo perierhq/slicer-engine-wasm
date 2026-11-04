@@ -1,0 +1,30 @@
+// GENERATED at configure time from engine/stubs/SLA/Hollowing.cpp.in -- do not edit the generated copy.
+//
+// Replaces src/libslic3r/SLA/Hollowing.cpp (SLA hollowing, needs OpenVDB) in the browser engine.
+//
+// Kept FFF code references the sla::DrainHole members (AABBMesh.cpp, SLA/IndexedMesh.cpp and the 3MF
+// readers), so they must exist, but the rest of Hollowing.cpp needs OpenVDB. The DrainHole member
+// definitions below are therefore taken verbatim from Orca's own Hollowing.cpp when the engine is
+// configured (the block from `DrainHole::to_mesh` up to `cut_drainholes`, see
+// engine/cmake/OrcaSources.cmake), so they always match the Orca checkout being built. The OpenVDB-based
+// functions (generate_interior, hollow_mesh, ...) are not referenced by kept code and are not defined.
+//
+// Source: @ORCA_HOLLOWING_SOURCE@
+
+#include <array>
+#include <cmath>
+#include <utility>
+
+#include <libslic3r/libslic3r.h>
+#include <libslic3r/TriangleMesh.hpp>
+#include <libslic3r/SLA/Hollowing.hpp>
+#include <libslic3r/SLA/IndexedMesh.hpp>
+#include <libslic3r/SLA/SupportTreeMesher.hpp>
+
+namespace Slic3r {
+namespace sla {
+
+@ORCA_DRAINHOLE_METHODS@
+
+} // namespace sla
+} // namespace Slic3r

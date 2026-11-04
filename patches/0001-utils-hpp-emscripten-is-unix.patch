@@ -1,0 +1,17 @@
+Emscripten is neither __APPLE__ nor __linux__: PathSanitizer in Utils.hpp then falls into its
+"unsupported platform" branch, which does not compile (env and len are undeclared after it). Treat
+Emscripten like Linux. Only affects how user paths are masked in log lines.
+
+diff --git a/src/libslic3r/Utils.hpp b/src/libslic3r/Utils.hpp
+index 7d12126..6819de0 100644
+--- a/src/libslic3r/Utils.hpp
++++ b/src/libslic3r/Utils.hpp
+@@ -175,7 +175,7 @@ private:
+     #else
+         const size_t len = BBL_INTERNAL_TESTING == 1 ? strlen("/Library/Application Support/BambuStudioInternal/user") : strlen("/Library/Application Support/BambuStudioBeta/user");
+     #endif
+-#elif __linux__
++#elif defined(__linux__) || defined(__EMSCRIPTEN__)
+         const char *env = std::getenv("HOME");
+     #if BBL_RELEASE_TO_PUBLIC
+         const size_t len = strlen("/.config/BambuStudio/user");

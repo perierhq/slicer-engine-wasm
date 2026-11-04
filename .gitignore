@@ -3,3 +3,4 @@ work/
 *.wasm
 node_modules/
 .DS_Store
+dist/
