@@ -30,7 +30,7 @@ set(ENGINE_LINK_OPTIONS
     -sEXPORT_ES6=1
     -sEXPORT_NAME=createBambuEngine
     -sENVIRONMENT=web,worker,node
-    "-sEXPORTED_FUNCTIONS=_engine_slice,_engine_init,_main"
+    "-sEXPORTED_FUNCTIONS=_engine_slice,_engine_init"
     -sEXPORTED_RUNTIME_METHODS=FS,ccall,wasmMemory
     -sALLOW_MEMORY_GROWTH=1
     -sINITIAL_MEMORY=256MB

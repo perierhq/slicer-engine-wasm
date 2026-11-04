@@ -107,8 +107,19 @@ std::string slice_plate(const std::string &file, const std::string &outdir, int 
     LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig | LoadStrategy::AddDefaultInstances | LoadStrategy::LoadAuxiliary;
     if (!boost::algorithm::iends_with(file, ".3mf"))
         throw Failure{2, "only 3MF projects are supported"};
-    Model model = Model::read_from_file(file, &config, &config_substitutions, strategy, &plate_data_src, &project_presets, &is_bbl_3mf,
+    // Object ids: Bambu G-code labels objects without a loaded 3MF id ("; OBJECT_ID:", M624, "unique label
+    // id") with the process-wide ObjectBase counter, so the CLI's own `Model model;` before the load
+    // (BS:1863) shows in every label. Declared and assigned the same way here; the engine must run one
+    // slice per process (as the CLI does) for the labels to match.
+    Model model;
+    model = Model::read_from_file(file, &config, &config_substitutions, strategy, &plate_data_src, &project_presets, &is_bbl_3mf,
                                         &file_version, nullptr, nullptr, nullptr, plate_to_slice);
+    // ~Model hands the 3MF's unpacked backup folder to Bambu's backup manager (remove_backup), which starts a
+    // boost::thread: the single-threaded engine cannot, so the folder is removed here instead.
+    struct BackupCleanup {
+        Model &model;
+        ~BackupCleanup() { try { model.remove_backup_path_if_exist(); } catch (...) {} }
+    } backup_cleanup{model};
     if (!is_bbl_3mf)
         throw Failure{3, "not a Bambu Studio 3MF project"};
     if (config.empty())
