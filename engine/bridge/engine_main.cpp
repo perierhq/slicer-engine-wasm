@@ -153,6 +153,10 @@ std::string slice_plate(const std::string &file, const std::string &outdir, int 
     std::vector<std::string> different_settings = config.option<ConfigOptionStrings>("different_settings_to_system", true)->values;
 
     DynamicPrintConfig m_print_config = std::move(config);
+    // BS:3198-3201: one entry per preset (process, filaments, printer), as in a Bambu-written project.
+    m_print_config.option<ConfigOptionStrings>("inherits_group", true)->values.resize(filament_count + 2, std::string());
+    m_print_config.option<ConfigOptionStrings>("different_settings_to_system", true)->values.resize(filament_count + 2, std::string());
+    different_settings = m_print_config.option<ConfigOptionStrings>("different_settings_to_system")->values;
     if (model.objects.empty())
         throw Failure{5, "the project has no objects"};
 
