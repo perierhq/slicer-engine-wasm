@@ -1,5 +1,5 @@
 {
-  "reference": "Bambu Studio 2.8.2.61 (v02.08.02.61), its command line on macOS 26 (arm64): BambuStudio --slice <plate> --outputdir <dir> <input>",
+  "reference": "Bambu Studio 2.8.2.61 (v02.08.02.61), its command line on macOS (arm64), made by tests/tools/mac-reference.sh. Projects with a full configuration: BambuStudio --slice <plate> --outputdir <dir> <input>. App-style projects (*.app.3mf, they only name presets): the presets flattened by tests/tools/flatten-presets.py with the project's values in them, then --load-settings machine.json;process.json --load-filaments <filaments> --filament-colour <the project's colours> --slice 0.",
   "cases": [
     {
       "name": "cube",
@@ -39,6 +39,84 @@
       "plates": 1,
       "outputs": {
         "plate_2.gcode": "3af7ecdfb36363b4f43291159424687add7d1e92ff4fc1ab1249ff2b288f004f"
+      }
+    },
+    {
+      "name": "cube.app",
+      "input": "inputs/cube.app.3mf",
+      "what": "the cube as the app writes it: preset names (P1S 0.4, 0.20mm Standard @BBL X1C, Bambu PLA Basic @BBL X1C) and the app's values; the engine resolves the presets",
+      "plate": 0,
+      "outputs": {
+        "plate_1.gcode": "cb67b014f84e19304d5a7765ad50effcc2757d0809ab04eeafccdf4f57c6bd6a"
+      },
+      "result": {
+        "presets": "resolved"
+      }
+    },
+    {
+      "name": "twocolour.app",
+      "input": "inputs/twocolour.app.3mf",
+      "what": "two colours as the app writes them, no flush matrix: the engine resolves the presets and computes Bambu's matrix from the colours (0,123,471,0)",
+      "plate": 0,
+      "outputs": {
+        "plate_1.gcode": "b46c6f119fbb4436c05c56d3881eece9b8fc5e162f369b31d89dc6dbf4a1bc3a"
+      },
+      "result": {
+        "presets": "resolved",
+        "flush_matrix": "computed"
+      }
+    },
+    {
+      "name": "desk.app",
+      "input": "inputs/desk.app.3mf",
+      "what": "four-colour desk plate as the app writes it. Not byte-identical to the arm64 CLI (fused multiply-add rounding, as in the spike): config block identical, 11 of 360,000 lines' worth of totals differ in the last digits. The hash is the engine's own (regression); approx compares with the CLI's numbers",
+      "plate": 0,
+      "outputs": {
+        "plate_1.gcode": "bba6f55575aa42e42484c6704e9a995191b6266e0195ea46f41dc39fce953dc3"
+      },
+      "result": {
+        "presets": "resolved",
+        "flush_matrix": "computed"
+      },
+      "approx": {
+        "plates.0.time_s": [
+          49348.7,
+          50
+        ],
+        "plates.0.filaments.0.total_g": [
+          54.975,
+          0.01
+        ],
+        "plates.0.filaments.1.total_g": [
+          52.459,
+          0.01
+        ],
+        "plates.0.filaments.2.total_g": [
+          123.566,
+          0.01
+        ]
+      }
+    },
+    {
+      "name": "hook.app",
+      "input": "inputs/hook.app.3mf",
+      "what": "support-heavy hook as the app writes it (tree supports). Same caveat as desk.app: config block identical to the arm64 CLI, totals within 0.1 %",
+      "plate": 0,
+      "outputs": {
+        "plate_1.gcode": "c1fc7e78707a472c3d20f529391233a64d4dfd5e14daeb34531157ea36c57126"
+      },
+      "result": {
+        "presets": "resolved"
+      },
+      "approx": {
+        "plates.0.time_s": [
+          4448.8,
+          10
+        ],
+        "plates.0.filaments.0.total_g": [
+          24.23,
+          0.01
+        ]
       }
     }
   ]

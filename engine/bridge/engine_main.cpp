@@ -8,10 +8,11 @@
 //   * a Bambu Studio project with its full configuration (what Bambu Studio writes: it has `inherits_group` /
 //     `different_settings_to_system`). It is sliced as the CLI slices it.
 //   * a project that only names its presets (`printer_settings_id`, `print_settings_id`, `filament_settings_id`) and
-//     carries the values it changes. The engine resolves the named system presets from the bundled profiles with Bambu's
-//     own PresetBundle (inherits, includes, filament variants), applies the project's values on top, and computes the
-//     flush matrix from the filament colours when the project has none (BS:3750-3925, FlushVolCalculator). This stands in
-//     for the CLI's --load-settings / --load-filaments with flattened presets.
+//     carries the values it changes. The engine flattens the named system presets from the bundled profiles as Bambu
+//     Studio's PresetBundle does (inherits, includes, own keys), puts the project's values into them, and composes them
+//     the way the CLI composes --load-settings / --load-filaments files (BS:2240-3750: printer, process, then each
+//     filament into its slot, per extruder variant). It computes the flush matrix from the filament colours when the
+//     project has none (BS:3750-3925, FlushVolCalculator).
 //
 // Ported: the 3MF load (BS:1876-1891), the version fix-ups (BS:1910-1952), the flush matrix (BS:3750-3925), config
 // normalisation (BS:4082-4111), the wrapping-detection and skirt-per-object resets (BS:4159-4171), plate sizes and
@@ -33,12 +34,12 @@
 #include <libslic3r/GCode/GCodeProcessor.hpp>
 #include <libslic3r/Model.hpp>
 #include <libslic3r/Preset.hpp>
-#include <libslic3r/PresetBundle.hpp>
 #include <libslic3r/Print.hpp>
 #include <libslic3r/PrintConfig.hpp>
 #include <libslic3r/ProjectTask.hpp>
 #include <libslic3r/Semver.hpp>
 #include <libslic3r/Utils.hpp>
+#include <libslic3r/miniz_extension.hpp>
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem.hpp>
@@ -120,18 +121,9 @@ void status_callback(const PrintBase::SlicingStatus &status)
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Preset resolution: the named system presets from the bundled profiles, as Bambu Studio's PresetBundle loads them.
+// Preset resolution: the named system presets from the bundled profiles.
 
 constexpr const char *VENDOR = "BBL";
-
-// Keys a project sets that name or describe presets rather than set values.
-const std::set<std::string> PRESET_IDENTITY_KEYS = {
-    "printer_settings_id", "print_settings_id", "filament_settings_id", "inherits", "inherits_group",
-    "different_settings_to_system", "compatible_printers", "compatible_printers_condition", "compatible_prints",
-    "compatible_prints_condition", "print_compatible_printers", "filament_ids", "filament_self_index",
-    "filament_extruder_variant", "print_extruder_id", "print_extruder_variant", "printer_extruder_id",
-    "printer_extruder_variant", "extruder_variant_list", "version", "name", "from", "setting_id",
-};
 
 bool is_full_project_config(const DynamicPrintConfig &config)
 {
@@ -150,26 +142,181 @@ Json read_json(const std::string &path)
     return j;
 }
 
+// Flattens one system preset as Bambu Studio resolves it (PresetBundle::load_vendor_configs_from_json): the parent's
+// values (inherits), then the included templates' (include), then the preset's own keys. Raw JSON values, as in
+// Bambu's *_full preset files, which are what its command line loads.
+const std::set<std::string> PRESET_META_KEYS = {"inherits", "include", "instantiation"};
+
+struct ProfileIndex {
+    std::string                                                profiles;  // <resources>/profiles
+    std::map<std::string, std::map<std::string, std::string>> sub_paths; // list -> name -> sub_path
+};
+
+ProfileIndex load_profile_index()
+{
+    ProfileIndex index;
+    index.profiles = resources_dir() + "/profiles";
+    const std::string vendor_file = index.profiles + "/" + VENDOR + ".json";
+    if (!boost::filesystem::exists(vendor_file))
+        throw Failure{21, "the project names presets but no profiles are installed (" + vendor_file + ")"};
+    Json vendor = read_json(vendor_file);
+    for (const char *list : {"machine_list", "process_list", "filament_list"})
+        for (auto &item : vendor[list])
+            index.sub_paths[list][item["name"].get<std::string>()] = item["sub_path"].get<std::string>();
+    return index;
+}
+
+Json flatten_preset(const ProfileIndex &index, const std::string &list, const std::string &name, int depth = 0)
+{
+    if (depth > 32)
+        throw Failure{23, "preset \"" + name + "\" inherits in a loop"};
+    auto it = index.sub_paths.at(list).find(name);
+    if (it == index.sub_paths.at(list).end())
+        throw Failure{23, "no system preset is called \"" + name + "\" (" + list.substr(0, list.find('_')) + ")"};
+    Json preset = read_json(index.profiles + "/" + VENDOR + "/" + it->second);
+    Json config = Json::object();
+    if (preset.contains("inherits") && preset["inherits"].is_string() && !preset["inherits"].get<std::string>().empty())
+        config.update(flatten_preset(index, list, preset["inherits"].get<std::string>(), depth + 1));
+    if (preset.contains("include")) {
+        std::vector<std::string> includes;
+        if (preset["include"].is_string())
+            includes.push_back(preset["include"].get<std::string>());
+        else if (preset["include"].is_array())
+            for (auto &inc : preset["include"])
+                if (inc.is_string())
+                    includes.push_back(inc.get<std::string>());
+        for (const std::string &include : includes) {
+            const Json included = flatten_preset(index, list, include, depth + 1); // kept alive for the loop (C++17)
+            for (auto &[key, value] : included.items())
+                if (key != "name" && key != "type" && key != "from" && key != "setting_id")
+                    config[key] = value;
+        }
+    }
+    for (auto &[key, value] : preset.items())
+        if (!PRESET_META_KEYS.count(key))
+            config[key] = value;
+    return config;
+}
+
+// A preset as the CLI loads a --load-settings / --load-filaments file (BS:2242-2310, load_config_file).
+struct LoadedPreset {
+    std::string        name;
+    std::string        filament_id;
+    DynamicPrintConfig config;
+};
+
+LoadedPreset load_flat_preset(Json flat, const std::string &kind, const std::string &name, int n)
+{
+    flat["name"]          = name;
+    flat["type"]          = kind;
+    flat["from"]          = "system";
+    flat["instantiation"] = "true";
+    const std::string dir  = "/tmp/engine-presets";
+    const std::string file = dir + "/" + kind + (kind == "filament" ? "_" + std::to_string(n) : std::string()) + ".json";
+    boost::filesystem::create_directories(dir);
+    boost::nowide::ofstream(file) << flat.dump(1);
+    LoadedPreset out;
+    out.name = name;
+    std::map<std::string, std::string> key_values;
+    std::string reason;
+    out.config.load_from_json(file, ForwardCompatibilitySubstitutionRule::Enable, key_values, reason);
+    if (!reason.empty())
+        throw Failure{23, "cannot load the " + kind + " preset \"" + name + "\": " + reason};
+    if (auto it = key_values.find(BBL_JSON_KEY_FILAMENT_ID); it != key_values.end())
+        out.filament_id = it->second;
+    out.config.normalize_fdm();
+    return out;
+}
+
+// BS:692-751
+void load_default_gcodes_to_config(DynamicPrintConfig &config, Preset::Type type)
+{
+    if (config.size() == 0)
+        return;
+    if (type == Preset::TYPE_PRINTER) {
+        for (const char *key : {"change_filament_gcode", "layer_change_gcode", "machine_end_gcode", "machine_pause_gcode", "machine_start_gcode",
+                                "template_custom_gcode", "printing_by_object_gcode", "before_layer_change_gcode", "time_lapse_gcode",
+                                "wrapping_detection_gcode"})
+            config.option<ConfigOptionString>(key, true);
+    } else if (type == Preset::TYPE_FILAMENT) {
+        for (const char *key : {"filament_start_gcode", "filament_end_gcode"}) {
+            std::vector<std::string> &values = config.option<ConfigOptionStrings>(key, true)->values;
+            if (values.empty())
+                values.resize(1, std::string());
+        }
+    }
+}
+
+// BS:3132-3196 with update_all: every key of the loaded preset replaces the project's.
+void update_full_config(DynamicPrintConfig &full_config, const DynamicPrintConfig &config)
+{
+    for (const t_config_option_key &opt_key : config.keys()) {
+        if (opt_key == "compatible_prints" || opt_key == "compatible_printers" || opt_key == "model_id" || opt_key == "inherits" ||
+            opt_key == "dev_model_name" || opt_key == "name" || opt_key == "from" || opt_key == "type" || opt_key == "version" ||
+            opt_key == "setting_id" || opt_key == "instantiation")
+            continue;
+        full_config.option(opt_key, true)->set(config.option(opt_key));
+    }
+}
+
+// The project's settings as written in its 3MF (Metadata/project_settings.config), before Bambu's legacy key and value
+// translations: the values the project sets are applied to the presets under the names it uses.
+Json read_project_settings(const std::string &path_3mf)
+{
+    mz_zip_archive zip;
+    mz_zip_zero_struct(&zip);
+    if (!open_zip_reader(&zip, path_3mf))
+        throw Failure{3, "cannot open the 3MF"};
+    size_t size = 0;
+    void  *data = mz_zip_reader_extract_file_to_heap(&zip, "Metadata/project_settings.config", &size, 0);
+    close_zip_reader(&zip);
+    if (!data)
+        throw Failure{3, "the 3MF has no Metadata/project_settings.config"};
+    std::string text(static_cast<const char *>(data), size);
+    mz_free(data);
+    return Json::parse(text);
+}
+
+// The project's own values go into the preset that holds each key; a per-filament list is split over the filaments
+// (tests/tools/flatten-presets.py does the same for the reference run). Keys no preset holds stay in the project's
+// config, where the composition leaves them.
+void apply_project_values(const Json &project, Json &machine, Json &process, std::vector<Json> &filaments)
+{
+    static const std::set<std::string> identity = {"printer_settings_id", "print_settings_id", "filament_settings_id", "inherits_group",
+                                                   "different_settings_to_system"};
+    for (auto &[key, value] : project.items()) {
+        if (identity.count(key))
+            continue;
+        if (filaments.front().contains(key) && value.is_array() && value.size() == filaments.size()) {
+            for (size_t n = 0; n < filaments.size(); ++n)
+                filaments[n][key] = Json::array({value[n]});
+            continue;
+        }
+        if (machine.contains(key))
+            machine[key] = value;
+        else if (filaments.front().contains(key))
+            for (Json &f : filaments)
+                f[key] = value;
+        else if (process.contains(key))
+            process[key] = value;
+    }
+}
+
 struct Resolved {
     DynamicPrintConfig       config;
     std::vector<std::string> notes;
+    bool                     single_filament_preset = false; // BS:2625: every slot loads the same preset
 };
 
-// Loads only the presets the project names, plus their parents and includes, with
-// PresetBundle::load_vendor_configs_from_json on a vendor index cut down to them: the same code path as Bambu Studio
-// loading resources/profiles, at a fraction of the cost.
-Resolved resolve_presets(const DynamicPrintConfig &project, const ConfigSubstitutions &substitutions)
+// The CLI's --load-settings machine;process --load-filaments f1;f2;... on a Bambu project (BS:2240-3750), with the
+// presets the project names flattened from the bundled profiles instead of files: the project's config, then every key
+// of the printer preset, then of the process preset, then each filament's vector values in its slot (variant-aware).
+Resolved resolve_presets(const DynamicPrintConfig &project, const Json &project_raw, const ConfigSubstitutions &substitutions)
 {
     Resolved out;
-    const std::string profiles = resources_dir() + "/profiles";
-    if (!boost::filesystem::exists(profiles + "/" + VENDOR + ".json"))
-        throw Failure{21, "the project names presets but no profiles are installed (" + profiles + "/BBL.json)"};
-
     auto opt_string = [&](const char *key) -> std::string {
         if (auto *o = project.option<ConfigOptionString>(key))
             return o->value;
-        if (auto *o = project.option<ConfigOptionStrings>(key); o && !o->values.empty())
-            return o->values.front();
         return {};
     };
     const std::string printer_name = opt_string("printer_settings_id");
@@ -180,138 +327,171 @@ Resolved resolve_presets(const DynamicPrintConfig &project, const ConfigSubstitu
     if (printer_name.empty() || print_name.empty() || filament_names.empty())
         throw Failure{22, "the project has no full configuration and does not name its printer, process and filament presets"};
 
-    // The vendor index and the subset of it this project needs.
-    Json vendor = read_json(profiles + "/" + VENDOR + ".json");
-    struct Entry { std::string list, sub_path; };
-    std::map<std::string, std::map<std::string, std::string>> sub_paths; // list -> name -> sub_path
-    for (const char *list : {"machine_list", "process_list", "filament_list"})
-        for (auto &item : vendor[list])
-            sub_paths[list][item["name"].get<std::string>()] = item["sub_path"].get<std::string>();
-    std::map<std::string, std::set<std::string>> needed;
-    std::function<void(const std::string &, const std::string &, int)> need = [&](const std::string &list, const std::string &name, int depth) {
-        if (depth > 32 || needed[list].count(name))
-            return;
-        auto it = sub_paths[list].find(name);
-        if (it == sub_paths[list].end())
-            throw Failure{23, "no system preset is called \"" + name + "\" (" + list.substr(0, list.find('_')) + ")"};
-        needed[list].insert(name);
-        Json data = read_json(profiles + "/" + VENDOR + "/" + it->second);
-        if (data.contains("inherits") && data["inherits"].is_string() && !data["inherits"].get<std::string>().empty())
-            need(list, data["inherits"].get<std::string>(), depth + 1);
-        if (data.contains("include")) {
-            if (data["include"].is_string())
-                need(list, data["include"].get<std::string>(), depth + 1);
-            else if (data["include"].is_array())
-                for (auto &inc : data["include"])
-                    if (inc.is_string())
-                        need(list, inc.get<std::string>(), depth + 1);
-        }
-    };
-    need("machine_list", printer_name, 0);
-    need("process_list", print_name, 0);
+    const ProfileIndex index = load_profile_index();
+    Json machine_flat = flatten_preset(index, "machine_list", printer_name);
+    Json process_flat = flatten_preset(index, "process_list", print_name);
+    std::vector<Json> filament_flats;
     for (const std::string &f : filament_names)
-        need("filament_list", f, 0);
-    for (const char *list : {"machine_list", "process_list", "filament_list"}) {
-        Json kept = Json::array();
-        for (auto &item : vendor[list])
-            if (needed[list].count(item["name"].get<std::string>()))
-                kept.push_back(item);
-        vendor[list] = kept;
-    }
-    const std::string index_dir = "/tmp/engine-profiles";
-    boost::filesystem::remove_all(index_dir);
-    boost::filesystem::create_directories(index_dir);
-    boost::nowide::ofstream(index_dir + "/" + VENDOR + ".json") << vendor.dump();
-    boost::filesystem::create_symlink(profiles + "/" + VENDOR, index_dir + "/" + VENDOR);
+        filament_flats.push_back(flatten_preset(index, "filament_list", f));
 
-    PresetBundle bundle;
-    auto [substitutions_loaded, loaded] =
-        bundle.load_vendor_configs_from_json(index_dir, VENDOR, PresetBundle::LoadSystem, ForwardCompatibilitySubstitutionRule::EnableSilent);
-    (void) substitutions_loaded;
-    BOOST_LOG_TRIVIAL(info) << "engine: loaded " << loaded << " system presets for the project";
-
-    auto select = [](PresetCollection &collection, const std::string &name, const char *what) {
-        if (!collection.find_preset(name, false))
-            throw Failure{23, std::string("the ") + what + " preset \"" + name + "\" did not load from the profiles"};
-        collection.select_preset_by_name(name, true);
+    auto listed_for_printer = [&](const Json &flat) {
+        if (!flat.contains("compatible_printers") || !flat["compatible_printers"].is_array() || flat["compatible_printers"].empty())
+            return true;
+        for (auto &p : flat["compatible_printers"])
+            if (p.is_string() && p.get<std::string>() == printer_name)
+                return true;
+        return false;
     };
-    select(bundle.printers, printer_name, "printer");
-    select(bundle.prints, print_name, "process");
-    for (const std::string &f : filament_names)
-        select(bundle.filaments, f, "filament");
-    bundle.filaments.select_preset_by_name(filament_names.front(), true);
-    bundle.filament_presets = filament_names;
-
-    // Compatibility is Bambu Studio's business in its window; the engine slices what it is given and says so.
-    const Preset &printer = bundle.printers.get_selected_preset();
-    auto compatible = [&](const Preset &p) {
-        auto *cp = p.config.option<ConfigOptionStrings>("compatible_printers");
-        return !cp || cp->values.empty() || std::find(cp->values.begin(), cp->values.end(), printer.name) != cp->values.end();
-    };
-    if (!compatible(bundle.prints.get_selected_preset()))
+    if (!listed_for_printer(process_flat))
         out.notes.push_back("process preset \"" + print_name + "\" is not listed for printer \"" + printer_name + "\"");
-    for (const std::string &f : filament_names)
-        if (const Preset *p = bundle.filaments.find_preset(f, false); p && !compatible(*p))
-            out.notes.push_back("filament preset \"" + f + "\" is not listed for printer \"" + printer_name + "\"");
+    for (size_t n = 0; n < filament_flats.size(); ++n)
+        if (!listed_for_printer(filament_flats[n]))
+            out.notes.push_back("filament preset \"" + filament_names[n] + "\" is not listed for printer \"" + printer_name + "\"");
 
-    // The full configuration as the presets combine it, with one value per extruder variant (as --load-settings gives
-    // the CLI); Print::apply picks the variant later.
-    DynamicPrintConfig full = bundle.full_config(false);
+    apply_project_values(project_raw, machine_flat, process_flat, filament_flats);
+    for (const ConfigSubstitution &sub : substitutions)
+        if (sub.opt_def && project_raw.contains(sub.opt_def->opt_key))
+            out.notes.push_back("read " + sub.opt_def->opt_key + " \"" + sub.old_value + "\" as \"" + sub.new_value->serialize() +
+                                "\" (not a value Bambu Studio knows)");
+    LoadedPreset machine = load_flat_preset(machine_flat, "machine", printer_name, 0);
+    LoadedPreset process = load_flat_preset(process_flat, "process", print_name, 0);
+    std::vector<LoadedPreset> filaments;
+    for (size_t n = 0; n < filament_flats.size(); ++n)
+        filaments.push_back(load_flat_preset(filament_flats[n], "filament", filament_names[n], int(n + 1)));
 
-    // The project's own values on top. A value the engine could not read (it was substituted on load) is left to the
-    // preset rather than replaced with Bambu's default.
-    std::set<std::string> substituted;
-    for (const ConfigSubstitution &s : substitutions)
-        if (s.opt_def)
-            substituted.insert(s.opt_def->opt_key);
-    const size_t filament_count = filament_names.size();
-    std::vector<int> self_index;
-    if (auto *o = full.option<ConfigOptionInts>("filament_self_index"))
-        self_index = o->values;
-    std::vector<std::string> overridden;
-    for (const std::string &key : project.keys()) {
-        if (PRESET_IDENTITY_KEYS.count(key))
-            continue;
-        if (substituted.count(key)) {
-            out.notes.push_back("kept the preset's " + key + ": the project's value is not one Bambu Studio reads");
-            continue;
-        }
-        const ConfigOption *src = project.option(key);
-        ConfigOption       *dst = full.option(key, false);
-        if (!dst || src->is_scalar()) {
-            full.set_key_value(key, src->clone());
-            overridden.push_back(key);
-            continue;
-        }
-        auto *vsrc = static_cast<const ConfigOptionVectorBase *>(src);
-        auto *vdst = static_cast<ConfigOptionVectorBase *>(dst);
-        const size_t n = vsrc->size(), m = vdst->size();
-        if (n == 0 || n == m) {
-            dst->set(src);
-        } else if (filament_options_with_variant.count(key) && n == filament_count && self_index.size() == m) {
-            // One value per filament, the preset has one per filament and extruder variant.
-            for (size_t i = 0; i < m; ++i)
-                vdst->set_at(vsrc, i, size_t(std::max(self_index[i] - 1, 0)));
-        } else if (n == 1 && (print_options_with_variant.count(key) || printer_options_with_variant_1.count(key) ||
-                              filament_options_with_variant.count(key))) {
-            // One value, the preset has one per extruder variant: it applies to every variant.
-            for (size_t i = 0; i < m; ++i)
-                vdst->set_at(vsrc, i, 0);
-        } else if (n == 2 && printer_options_with_variant_2.count(key) && m % 2 == 0) {
-            // Machine limits: normal and silent mode, per variant.
-            for (size_t i = 0; i < m; ++i)
-                vdst->set_at(vsrc, i, i % 2);
-        } else {
-            dst->set(src);
-        }
-        overridden.push_back(key);
+    DynamicPrintConfig m = project;
+    const int filament_count = int(filament_names.size());
+    {
+        auto &different_settings = m.option<ConfigOptionStrings>("different_settings_to_system", true)->values;
+        auto &inherits_group     = m.option<ConfigOptionStrings>("inherits_group", true)->values;
+        inherits_group.resize(filament_count + 2, std::string());
+        different_settings.resize(filament_count + 2, std::string());
+
+        // BS:3214-3250: the printer.
+        machine.config.set("printer_settings_id", printer_name, true);
+        different_settings[filament_count + 1] = "";
+        inherits_group[filament_count + 1]     = "";
+        load_default_gcodes_to_config(machine.config, Preset::TYPE_PRINTER);
+        update_full_config(m, machine.config);
+        // (The CLI caps machine limits from cli_config.json only when the printer changes, BS:3252-3320.)
+
+        // BS:3330-3388: the process.
+        process.config.set("print_settings_id", print_name, true);
+        m.option<ConfigOptionStrings>("print_compatible_printers", true)->values =
+            process.config.option<ConfigOptionStrings>("compatible_printers", true)->values;
+        different_settings[0] = "";
+        inherits_group[0]     = "";
+        load_default_gcodes_to_config(process.config, Preset::TYPE_PRINT);
+        update_full_config(m, process.config);
     }
-    BOOST_LOG_TRIVIAL(info) << "engine: the project sets " << overridden.size() << " values over its presets";
+    sync_nozzle_volume_type_to_extruder_count(m, false);
 
-    // As the CLI's --load-settings path leaves them for system presets: no parents, no differences (BS:3198-3201).
-    full.option<ConfigOptionStrings>("inherits_group", true)->values.assign(filament_count + 2, std::string());
-    full.option<ConfigOptionStrings>("different_settings_to_system", true)->values.assign(filament_count + 2, std::string());
-    out.config = std::move(full);
+    // BS:3511-3747: the filaments, one slot each.
+    {
+        std::vector<int> old_start_indice(filament_count, 0), old_variant_counts(filament_count, 1), new_variant_counts;
+        ConfigOptionInts *self_index_opt = m.option<ConfigOptionInts>("filament_self_index");
+        if (!self_index_opt) {
+            self_index_opt = m.option<ConfigOptionInts>("filament_self_index", true);
+            self_index_opt->values.resize(filament_count);
+            for (int i = 0; i < filament_count; i++)
+                self_index_opt->values[i] = i + 1;
+        }
+        std::vector<int> old_self_indice = self_index_opt->values;
+        int k = -1, current_filament = 0;
+        for (size_t i = 0; i < old_self_indice.size(); i++) {
+            if (old_self_indice[i] > current_filament) {
+                current_filament = old_self_indice[i];
+                old_start_indice[++k] = int(i);
+                old_variant_counts[k] = 1;
+            } else
+                old_variant_counts[k] = old_variant_counts[k] + 1;
+        }
+        new_variant_counts = old_variant_counts;
+        for (int index = 0; index < filament_count; index++) {
+            DynamicPrintConfig &config         = filaments[index].config;
+            const int           filament_index = index + 1;
+            load_default_gcodes_to_config(config, Preset::TYPE_FILAMENT);
+
+            auto *settings_ids = m.option<ConfigOptionStrings>("filament_settings_id", true);
+            ConfigOptionString name_setting(filaments[index].name);
+            if (int(settings_ids->size()) < filament_count)
+                settings_ids->resize(filament_count, &name_setting);
+            settings_ids->set_at(&name_setting, filament_index - 1, 0);
+            config.erase("filament_settings_id");
+            auto &different_settings = m.option<ConfigOptionStrings>("different_settings_to_system", true)->values;
+            if (config.option("different_settings_to_system")) {
+                auto values = config.option<ConfigOptionStrings>("different_settings_to_system", true)->values;
+                different_settings[filament_index] = values.empty() ? std::string() : values[0];
+                config.erase("different_settings_to_system");
+            } else
+                different_settings[filament_index] = "";
+            m.option<ConfigOptionStrings>("inherits_group", true)->values[filament_index] = "";
+
+            auto *ids = m.option<ConfigOptionStrings>("filament_ids", true);
+            ConfigOptionString id_setting(filaments[index].filament_id);
+            if (int(ids->size()) < filament_count)
+                ids->resize(filament_count, &id_setting);
+            ids->set_at(&id_setting, filament_index - 1, 0);
+
+            ConfigOptionStrings *curr_variant_opt = m.option<ConfigOptionStrings>("filament_extruder_variant");
+            if (!curr_variant_opt) {
+                curr_variant_opt = m.option<ConfigOptionStrings>("filament_extruder_variant", true);
+                curr_variant_opt->values.resize(filament_count, get_extruder_variant_string(etDirectDrive, nvtStandard));
+            }
+            const ConfigOptionStrings *new_variant_opt = config.option<ConfigOptionStrings>("filament_extruder_variant", true);
+            const int new_variant_count = int(new_variant_opt->size()), old_variant_count = old_variant_counts[filament_index - 1];
+
+            for (const t_config_option_key &opt_key : config.keys()) {
+                const ConfigOption *source_opt = config.option(opt_key);
+                if (source_opt->is_scalar()) {
+                    if (opt_key == "compatible_printers_condition") {
+                        auto *dst = m.option<ConfigOptionStrings>("compatible_machine_expression_group", true);
+                        if (dst->size() == 0) {
+                            ConfigOptionString empty;
+                            dst->resize(filament_count + 2, &empty);
+                        }
+                        dst->set_at(source_opt, filament_index, 0);
+                    } else if (opt_key == "compatible_prints_condition") {
+                        auto *dst = m.option<ConfigOptionStrings>("compatible_process_expression_group", true);
+                        if (dst->size() == 0) {
+                            ConfigOptionString empty;
+                            dst->resize(filament_count, &empty);
+                        }
+                        dst->set_at(source_opt, filament_index - 1, 0);
+                    }
+                    continue; // the CLI takes no other scalar from a filament preset
+                }
+                if (opt_key == "compatible_prints" || opt_key == "compatible_printers" || opt_key == "model_id" || opt_key == "dev_model_name" ||
+                    opt_key == "filament_settings_id")
+                    continue;
+                auto *dst = static_cast<ConfigOptionVectorBase *>(m.option(opt_key, true));
+                auto *src = static_cast<const ConfigOptionVectorBase *>(source_opt);
+                if (filament_options_with_variant.count(opt_key)) {
+                    std::vector<int> temp_variant_indice(new_variant_count, -1);
+                    dst->set_with_restore_2(opt_key, src, temp_variant_indice, old_start_indice[filament_index - 1], old_variant_count, true);
+                    if (opt_key == "filament_extruder_variant")
+                        new_variant_counts[filament_index - 1] = int(src->size());
+                } else
+                    dst->set_at(src, filament_index - 1, 0);
+            }
+            if (old_variant_count != new_variant_count)
+                for (int i = index + 1; i < filament_count; i++)
+                    old_start_indice[i] += new_variant_count - old_variant_count;
+        }
+        if (m.option<ConfigOptionStrings>("filament_extruder_variant")) {
+            std::vector<int> &self_indice = m.option<ConfigOptionInts>("filament_self_index", true)->values;
+            self_indice.resize(m.option<ConfigOptionStrings>("filament_extruder_variant")->size(), 1);
+            int k2 = 0;
+            for (int i = 0; i < filament_count; i++)
+                for (int j = 0; j < new_variant_counts[i]; j++)
+                    self_indice[k2++] = i + 1;
+        }
+    }
+
+    // BS:2625: when every slot loads the same filament preset the CLI maps them all to one filament and, unless the
+    // colours differ (BS:3770-3788), turns the prime tower off (BS:4182-4210).
+    out.single_filament_preset = std::set<std::string>(filament_names.begin(), filament_names.end()).size() == 1;
+    out.config = std::move(m);
     return out;
 }
 
@@ -681,15 +861,16 @@ Json run(const Options &opt)
 
     // --- Presets: as the project carries them, or resolved from the profiles -----------------------------------------
     bool resolve = opt.presets == "resolve" || (opt.presets == "auto" && !is_full_project_config(config));
-    bool presets_loaded = false;
+    bool presets_loaded = false, disable_wipe_tower_after_mapping = false;
     const bool project_has_flush_matrix = config.has("flush_volumes_matrix");
     if (resolve) {
         g_progress.report(0, "Resolving presets");
-        Resolved r = resolve_presets(config, config_substitutions.substitutions);
+        Resolved r = resolve_presets(config, read_project_settings(opt.input), config_substitutions.substitutions);
         for (auto &n : r.notes)
             notes.push_back(n);
-        config         = std::move(r.config);
-        presets_loaded = true;
+        config                           = std::move(r.config);
+        presets_loaded                   = true;
+        disable_wipe_tower_after_mapping = r.single_filament_preset;
     }
     result["presets"] = resolve ? "resolved" : "project";
 
@@ -711,6 +892,16 @@ Json run(const Options &opt)
         int printer_variant_count = 1;
         if (auto *o = m_print_config.option<ConfigOptionStrings>("printer_extruder_variant"))
             printer_variant_count = int(o->values.size());
+        // BS:3770-3788: one preset in every slot, but more than one colour: keep the prime tower.
+        if (disable_wipe_tower_after_mapping) {
+            std::set<std::string> colours;
+            if (auto *o = m_print_config.option<ConfigOptionStrings>("filament_colour"))
+                for (const std::string &c : o->values)
+                    if (!c.empty())
+                        colours.insert(c);
+            if (colours.size() > 1)
+                disable_wipe_tower_after_mapping = false;
+        }
         auto *matrix = m_print_config.option<ConfigOptionFloats>("flush_volumes_matrix");
         const size_t want = size_t(filament_count) * filament_count * extruder_count;
         if (!project_has_flush_matrix || !matrix || matrix->values.size() != want) {
@@ -747,6 +938,22 @@ Json run(const Options &opt)
         wrapping->value = false;
     if (skirt_per_object_reset)
         m_print_config.option<ConfigOptionBool>("skirt_per_object", true)->value = false;
+    // BS:4172-4210: the CLI's prime tower rule for slots that all load one filament preset in one colour.
+    if (disable_wipe_tower_after_mapping && wrapping->value && !m_print_config.opt<ConfigOptionPoints>("wrapping_exclude_area", true)->values.empty())
+        disable_wipe_tower_after_mapping = false;
+    if (disable_wipe_tower_after_mapping) {
+        m_print_config.option<ConfigOptionBool>("enable_prime_tower", true)->value = false;
+        auto &diff = m_print_config.option<ConfigOptionStrings>("different_settings_to_system", true)->values;
+        if (diff[0].empty())
+            diff[0] = "enable_prime_tower";
+        else {
+            std::vector<std::string> keys;
+            Slic3r::unescape_strings_cstyle(diff[0], keys);
+            if (std::find(keys.begin(), keys.end(), "enable_prime_tower") == keys.end())
+                diff[0] += ";enable_prime_tower";
+        }
+        notes.push_back("every slot loads the same filament in one colour: prime tower off, as Bambu Studio's command line does");
+    }
 
     // --- BS:4215-4320: plate size --------------------------------------------------------------------------------------
     const Pointfs printable_area = m_print_config.opt<ConfigOptionPoints>("printable_area")->values;
