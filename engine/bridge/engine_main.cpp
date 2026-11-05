@@ -546,16 +546,18 @@ std::vector<int> get_min_flush_volumes(const DynamicPrintConfig &full_config, si
 
     for (size_t idx = 0; idx < filament_size; ++idx) {
         int extra_flush_volume = nozzle_volume_val;
-        int retract_length = machine_enabled_level && machine_activated ? printer_retraction_distance_when_cut[nozzle_id] : 0;
-        unsigned char filament_activated = filament_long_retractions_when_cut[idx];
-        double filament_retract_length = filament_retraction_distance_when_cut[idx];
+        // Bambu indexes these lists directly; a short list is read at its last value here instead of past its end.
+        auto at = [](const auto &v, size_t i) { return v.empty() ? decltype(v[0])(0) : v[std::min(i, v.size() - 1)]; };
+        int retract_length = machine_enabled_level && machine_activated ? at(printer_retraction_distance_when_cut, nozzle_id) : 0;
+        unsigned char filament_activated = at(filament_long_retractions_when_cut, idx);
+        double filament_retract_length = at(filament_retraction_distance_when_cut, idx);
         if (filament_activated == 0)
             retract_length = 0;
         else if (filament_activated == 1 && machine_enabled_level == LongRectrationLevel::EnableFilament) {
             if (!std::isnan(filament_retract_length))
-                retract_length = (int) filament_retraction_distance_when_cut[idx];
+                retract_length = (int) filament_retract_length;
             else
-                retract_length = printer_retraction_distance_when_cut[nozzle_id];
+                retract_length = at(printer_retraction_distance_when_cut, nozzle_id);
         }
         extra_flush_volume -= PI * 1.75 * 1.75 / 4 * retract_length;
         extra_flush_volumes.emplace_back(extra_flush_volume);

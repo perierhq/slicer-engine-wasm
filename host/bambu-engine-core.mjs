@@ -57,6 +57,19 @@ export async function runSlice(createEngine, job) {
     onProgress: job.onProgress,
   });
   try {
+    return run(Module, job, log);
+  } catch (error) {
+    // A trap or abort in the engine: keep its last log lines with the error.
+    if (error && typeof error === 'object') error.log = log.slice(-40);
+    throw error;
+  } finally {
+    // Threads: stop the pthread workers this instance started.
+    Module.PThread?.terminateAllThreads?.();
+  }
+}
+
+function run(Module, job, log) {
+  {
     const { FS } = Module;
     for (const dir of ['/in', '/out', '/tmp', '/data', '/resources']) FS.mkdirTree(dir);
     if (job.profiles) untarInto(FS, job.profiles, '/resources/profiles');
@@ -76,8 +89,5 @@ export async function runSlice(createEngine, job) {
     }
     result.heap_bytes = Module.wasmMemory?.buffer.byteLength;
     return { plates, result, log };
-  } finally {
-    // Threads: stop the pthread workers this instance started.
-    Module.PThread?.terminateAllThreads?.();
   }
 }

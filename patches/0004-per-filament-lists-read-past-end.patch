@@ -1,0 +1,70 @@
+Per-filament lists read past their end. Projects can carry fewer values than filaments: Bambu's CLI keeps
+single values for keys no loaded preset sets (filament_change_length_nc, ...) and sets 45 mm³ on every value
+of the filament_prime_volume list it has. Print::_make_wipe_tower (filament_prime_volume(_nc)) and WipeTower
+(filament_change_length(_nc)) index those lists directly, reading past the vector: in practice the zeroed
+bytes after a small allocation, in general whatever the heap holds (found with AddressSanitizer). Read 0 past
+the end explicitly; Bambu Studio's own output for those projects is unchanged (tests/expected.json).
+
+diff --git a/src/libslic3r/GCode/WipeTower.cpp b/src/libslic3r/GCode/WipeTower.cpp
+index c4fa283..c75ec84 100644
+--- a/src/libslic3r/GCode/WipeTower.cpp
++++ b/src/libslic3r/GCode/WipeTower.cpp
+@@ -15,6 +15,10 @@
+ 
+ namespace Slic3r
+ {
++
++// Per-filament lists can be shorter than the filament count (projects keep a single filament_change_length_nc, for
++// example); indexing them directly read past the vector. Past the end reads 0, as those bytes in practice were.
++template<typename T> static T value_or_zero(const std::vector<T> &values, size_t idx) { return idx < values.size() ? values[idx] : T(0); }
+ float         flat_iron_speed                = 10.f * 60.f;
+ static const double wipe_tower_wall_infill_overlap = 0.0;
+ static constexpr double WIPE_TOWER_RESOLUTION = 0.1;
+@@ -2878,7 +2882,7 @@ WipeTower::WipeTowerInfo::ToolChange WipeTower::set_toolchange(int old_tool, int
+     float length_to_extrude = volume_to_length(wipe_volume, m_perimeter_width, layer_height);
+     float                             toolchange_gap_width    = get_block_gap_width(new_tool,false);
+     float                             nozzlechange_gap_width  = get_block_gap_width(old_tool,true);
+-    float filament_change_length = !is_same_extruder(old_tool, new_tool, layer_id) ? m_filaments_change_length.first[old_tool] : m_filaments_change_length.second[old_tool];
++    float filament_change_length = !is_same_extruder(old_tool, new_tool, layer_id) ? value_or_zero(m_filaments_change_length.first, old_tool) : value_or_zero(m_filaments_change_length.second, old_tool);
+     depth += std::ceil(length_to_extrude / width) * toolchange_gap_width;
+     // depth *= m_extra_spacing;
+ 
+@@ -2943,7 +2947,7 @@ void WipeTower::plan_toolchange(float z_par, float layer_height_par, unsigned in
+ 
+     depth += std::ceil(length_to_extrude / width) * m_perimeter_width;
+     //depth *= m_extra_spacing;
+-    float filament_change_length = !is_same_extruder(old_tool, new_tool, layer_id) ? m_filaments_change_length.first[old_tool] : m_filaments_change_length.second[old_tool];
++    float filament_change_length = !is_same_extruder(old_tool, new_tool, layer_id) ? value_or_zero(m_filaments_change_length.first, old_tool) : value_or_zero(m_filaments_change_length.second, old_tool);
+     float nozzle_change_depth = 0;
+     float nozzle_change_length = 0;
+     if (is_need_ramming(old_tool, new_tool, layer_id)) {
+@@ -3105,8 +3109,8 @@ bool WipeTower::is_petg_filament(int filament_id) const
+ bool WipeTower::is_need_reverse_travel(int filament_id,bool extruder_change) const
+ {
+     if (extruder_change)
+-        return m_filpar[filament_id].ramming_travel_time.first > EPSILON && m_filaments_change_length.first[filament_id]>EPSILON;
+-    return m_filpar[filament_id].ramming_travel_time.second > EPSILON && m_filaments_change_length.second[filament_id] > EPSILON;
++        return m_filpar[filament_id].ramming_travel_time.first > EPSILON && value_or_zero(m_filaments_change_length.first, filament_id) > EPSILON;
++    return m_filpar[filament_id].ramming_travel_time.second > EPSILON && value_or_zero(m_filaments_change_length.second, filament_id) > EPSILON;
+ }
+ 
+ // BBS: consider both soluable and support properties
+diff --git a/src/libslic3r/Print.cpp b/src/libslic3r/Print.cpp
+index dc4806b..1a5ed2c 100644
+--- a/src/libslic3r/Print.cpp
++++ b/src/libslic3r/Print.cpp
+@@ -3815,8 +3815,12 @@ void Print::_make_wipe_tower()
+                 float grab_purge_volume = m_config.grab_length.get_at(extruder_id) * 2.4; //(diameter/2)^2*PI=2.4
+                 volume_to_purge = std::max(0.f, volume_to_purge - grab_purge_volume);
+ 
+-                float wipe_volume_ec = m_config.filament_prime_volume.values[filament_id];
+-                float wipe_volume_nc = m_config.filament_prime_volume_nc.values[filament_id];
++                // Projects can carry fewer values than filaments (the CLI's own 45 mm³ rule keeps the list's length):
++                // values[filament_id] then read past the vector, in practice the zeroed bytes after a small allocation.
++                // Read 0 there explicitly instead of whatever the heap holds.
++                const auto &prime_ec = m_config.filament_prime_volume.values, &prime_nc = m_config.filament_prime_volume_nc.values;
++                float wipe_volume_ec = filament_id < prime_ec.size() ? prime_ec[filament_id] : 0.f;
++                float wipe_volume_nc = filament_id < prime_nc.size() ? prime_nc[filament_id] : 0.f;
+                 // special primte volume settings for H2C
+                 if(m_config.prime_volume_mode == PrimeVolumeMode::pvmSaving){
+                     wipe_volume_ec = 15.f;

@@ -1,10 +1,16 @@
 name: build
 
+# Builds both engine variants, compares their G-code with Bambu Studio's own (tests/expected.json) and, for a v* tag,
+# publishes the release with the corresponding source, SHA256SUMS and manifest.json.
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -14,6 +20,7 @@ jobs:
       ORCA_WASM_ROOT: ${{ github.workspace }}/work
       JOBS: 4
       NICE: 0
+      VARIANTS: st mt
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -26,20 +33,38 @@ jobs:
         with:
           path: work/emsdk
           key: emsdk-${{ hashFiles('scripts/pin.sh') }}
-      - name: Cache dependency prefix
+      - name: Cache dependency prefixes
         uses: actions/cache@v4
         with:
           path: |
             work/deps-src
             work/prefix-st
-          key: deps-st-${{ hashFiles('scripts/pin.sh', 'deps/**', 'scripts/toolchain.sh') }}
+            work/prefix-mt
+          key: deps-st-mt-${{ hashFiles('scripts/pin.sh', 'deps/**', 'scripts/toolchain.sh') }}
       - name: Build
         run: scripts/build.sh
-      - name: Test against Bambu Studio's own output
+      - name: Test st against Bambu Studio's own output
         run: node tests/run.mjs dist st
+      - name: Test mt against Bambu Studio's own output
+        run: node tests/run.mjs dist mt
+      - name: Sizes
+        run: |
+          for f in dist/engine-*.wasm dist/engine-*.mjs dist/profiles.tar; do
+            echo "$f $(stat -c %s "$f") raw, $(brotli -q 11 -c "$f" | wc -c) brotli, $(gzip -9 -c "$f" | wc -c) gzip"
+          done | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: engine
           path: |
             dist/
             build/test-out/
+      - name: Package release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: scripts/package-release.sh "${GITHUB_REF_NAME#v}" dist release
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* --title "$GITHUB_REF_NAME" \
+            --notes-file <(python3 scripts/release-notes.py release/manifest.json build/test-out)

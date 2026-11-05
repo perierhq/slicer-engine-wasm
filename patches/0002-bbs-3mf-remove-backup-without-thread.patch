@@ -1,0 +1,26 @@
+~Model() hands a model's unpacked 3MF folder to _BBS_Backup_Manager, whose constructor starts a
+boost::thread. The single-threaded wasm build cannot start one; the throw inside ~Model (noexcept) then
+terminates, e.g. when a 3MF load fails and read_from_file's local Model unwinds. On Emscripten, remove
+the folder synchronously, as the manager's RemoveBackup task does, and start no thread.
+
+diff --git a/src/libslic3r/Format/bbs_3mf.cpp b/src/libslic3r/Format/bbs_3mf.cpp
+index 1c1ff86..d4026da 100644
+--- a/src/libslic3r/Format/bbs_3mf.cpp
++++ b/src/libslic3r/Format/bbs_3mf.cpp
+@@ -9615,6 +9615,16 @@ void backup_soon()
+ 
+ void remove_backup(Model& model, bool removeAll)
+ {
++#ifdef __EMSCRIPTEN__
++    // The wasm engine runs no backup thread (_BBS_Backup_Manager starts one, which the single-threaded build cannot,
++    // and ~Model calls this, where an exception terminates): remove the model's unpacked 3MF folder here, as the
++    // manager's RemoveBackup task would.
++    if (removeAll && !model.get_backup_path().empty()) {
++        boost::system::error_code ec;
++        boost::filesystem::remove_all(model.get_backup_path(), ec);
++    }
++    return;
++#endif
+     _BBS_Backup_Manager::get().remove_backup(model, removeAll);
+ }
+ 

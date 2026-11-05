@@ -1,0 +1,54 @@
+Two out-of-bounds reads in Fill/FillFloatingConcentric.cpp (the "floating vertical shell" fill), found with
+AddressSanitizer in the wasm engine. They made its output depend on the heap's history (the log level, the
+allocator, threads) and could crash it.
+
+* resplit_order_loops builds an EdgeGrid from a temporary { polyline.points }, which is freed before
+  has_intersecting_edges() reads it. In Bambu Studio's own builds the freed block reads as allocator
+  metadata and the check reports a self-intersection, so floating detection is skipped for these lines;
+  tests/expected.json holds G-code from those builds that only matches with that result. Keep the result, read
+  no freed memory.
+* interpolate_width reads path[prev_idx] with prev_idx == -1, or path[next_idx] with next_idx == path.size(),
+  when a line has no subject point on one side. Use the known side's width (the limit those far-away garbage
+  points approximated). Unreached while floating detection is skipped, kept for safety.
+
+diff --git a/src/libslic3r/Fill/FillFloatingConcentric.cpp b/src/libslic3r/Fill/FillFloatingConcentric.cpp
+index 16875a7..46cde15 100644
+--- a/src/libslic3r/Fill/FillFloatingConcentric.cpp
++++ b/src/libslic3r/Fill/FillFloatingConcentric.cpp
+@@ -233,6 +233,10 @@ double interpolate_width(const ZPath& path,
+         size_t next_z_idx = path[next_idx].z();
+         width_next = line.get_width_at(next_z_idx);
+     }
++    // Without a subject point on one side, path[prev_idx] / path[next_idx] would be read out of bounds (garbage from the
++    // heap, so the width depended on allocation history). Their far-away garbage made t ~ 1 resp. ~ 0: take that limit.
++    if (prev_idx < 0 || next_idx >= int(path.size()))
++        return prev_idx < 0 ? width_next : width_prev;
+     Point prev(path[prev_idx].x(), path[prev_idx].y());
+     Point next(path[next_idx].x(), path[next_idx].y());
+     Point curr(path[idx].x(), path[idx].y());
+@@ -687,18 +691,13 @@ FloatingThickPolylines FillFloatingConcentric::resplit_order_loops(Point curr_po
+         if (all_extrusions[idx]->empty())
+             continue;
+         ThickPolyline thick_polyline = Arachne::to_thick_polyline(*all_extrusions[idx]);
+-        bool is_self_intersect = false;
+-        if(print_object_config->detect_floating_vertical_shell.value)
+-        {
+-            Polyline polyline = thick_polyline;
+-            auto bbox_line = get_extents(polyline);
+-
+-            EdgeGrid::Grid grid;
+-            grid.set_bbox(bbox_line);
+-            grid.create({ polyline.points }, scaled<coord_t>(10.), !all_extrusions[idx]->is_closed);
+-            if (grid.has_intersecting_edges())
+-                is_self_intersect = true;
+-        }
++        // Upstream checks the line for self-intersections with an EdgeGrid built from a temporary
++        // `{ polyline.points }`, which is freed before has_intersecting_edges() reads it (heap-use-after-free). In
++        // Bambu Studio's builds the freed block's first point reads as allocator metadata, a point far outside the
++        // grid, and the check reports an intersection: floating detection is skipped for these lines. Keep that
++        // result, without reading freed memory (in the wasm engine the garbage depended on the log level, the
++        // allocator and threads).
++        bool is_self_intersect = print_object_config->detect_floating_vertical_shell.value;
+         FloatingThickPolyline thick_line_with_floating = detect_floating_line(thick_polyline, floating_areas, default_width, !print_object_config->detect_floating_vertical_shell.value || is_self_intersect);
+         smooth_floating_line(thick_line_with_floating, scale_(2), scale_(2));
+         int split_idx = 0;

@@ -69,10 +69,10 @@
     {
       "name": "desk.app",
       "input": "inputs/desk.app.3mf",
-      "what": "four-colour desk plate as the app writes it. Not byte-identical to the arm64 CLI (fused multiply-add rounding, as in the spike): config block identical, 11 of 360,000 lines' worth of totals differ in the last digits. The hash is the engine's own (regression); approx compares with the CLI's numbers",
+      "what": "four-colour desk plate as the app wrote it for the comparison spike. Not byte-identical to the arm64 CLI (fused multiply-add rounding, as in the spike): config block identical, totals within the last digit. The hash is the engine's own (regression); approx compares with the CLI's numbers",
       "plate": 0,
       "outputs": {
-        "plate_1.gcode": "bba6f55575aa42e42484c6704e9a995191b6266e0195ea46f41dc39fce953dc3"
+        "plate_1.gcode": "c8164ff166357bd24860752b1b801e2ba5d2459a6496376181049a69d2d756be"
       },
       "result": {
         "presets": "resolved",
@@ -103,7 +103,7 @@
       "what": "support-heavy hook as the app writes it (tree supports). Same caveat as desk.app: config block identical to the arm64 CLI, totals within 0.1 %",
       "plate": 0,
       "outputs": {
-        "plate_1.gcode": "c1fc7e78707a472c3d20f529391233a64d4dfd5e14daeb34531157ea36c57126"
+        "plate_1.gcode": "2637e5297599e5fc8947c7bf99ebefc8473f61839fec5c421bcd3333ea07a110"
       },
       "result": {
         "presets": "resolved"
@@ -115,6 +115,70 @@
         ],
         "plates.0.filaments.0.total_g": [
           24.23,
+          0.01
+        ]
+      }
+    },
+    {
+      "name": "desk-engine.app-log0",
+      "what": "the desk plate exactly as the app sends it (ThreeMF.engineInput, Bambu names, AMS colours), log level 0. It crashed the spike-era build below log level 3 (heap garbage, see patches/0003 and 0004). Config block identical to the arm64 CLI, totals within the last digit; the hash is the engine's own and must not depend on the log level",
+      "logLevel": 0,
+      "input": "inputs/desk-engine.app.3mf",
+      "plate": 0,
+      "outputs": {
+        "plate_1.gcode": "695d8745d40ca7f5573bdef7d9c4f286c3ff4ac659c05d86280006c7a3f5c59f"
+      },
+      "result": {
+        "presets": "resolved",
+        "flush_matrix": "computed"
+      },
+      "approx": {
+        "plates.0.time_s": [
+          49352.9,
+          10
+        ],
+        "plates.0.filaments.0.total_g": [
+          54.975,
+          0.01
+        ],
+        "plates.0.filaments.1.total_g": [
+          52.459,
+          0.01
+        ],
+        "plates.0.filaments.2.total_g": [
+          123.566,
+          0.01
+        ]
+      }
+    },
+    {
+      "name": "desk-engine.app-log3",
+      "what": "the same at log level 3: same bytes",
+      "logLevel": 3,
+      "input": "inputs/desk-engine.app.3mf",
+      "plate": 0,
+      "outputs": {
+        "plate_1.gcode": "695d8745d40ca7f5573bdef7d9c4f286c3ff4ac659c05d86280006c7a3f5c59f"
+      },
+      "result": {
+        "presets": "resolved",
+        "flush_matrix": "computed"
+      },
+      "approx": {
+        "plates.0.time_s": [
+          49352.9,
+          10
+        ],
+        "plates.0.filaments.0.total_g": [
+          54.975,
+          0.01
+        ],
+        "plates.0.filaments.1.total_g": [
+          52.459,
+          0.01
+        ],
+        "plates.0.filaments.2.total_g": [
+          123.566,
           0.01
         ]
       }
