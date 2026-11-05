@@ -39,5 +39,7 @@ jobs:
         run: node tests/run.mjs dist st
       - uses: actions/upload-artifact@v4
         with:
-          name: bambu-engine-st
-          path: dist/
+          name: engine
+          path: |
+            dist/
+            build/test-out/

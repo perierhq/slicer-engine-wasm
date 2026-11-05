@@ -1,5 +1,5 @@
 # The engine module: bridge/engine_main.cpp linked with libslic3r into an ES6 module factory
-# bambu-engine-<variant>.mjs + .wasm. Adapted from Muon3D's engine/cmake/Engine.cmake (AGPL-3.0-only).
+# engine-<variant>.mjs + .wasm. Adapted from Muon3D's engine/cmake/Engine.cmake (AGPL-3.0-only).
 
 # Runtime resource files libslic3r reads through resources_dir() on the slicing path, embedded into
 # MEMFS under /resources.
@@ -20,7 +20,7 @@ endforeach ()
 add_executable(bambu_engine "${ENGINE_DIR}/bridge/engine_main.cpp")
 target_link_libraries(bambu_engine PRIVATE libslic3r boost_libs)
 set_target_properties(bambu_engine PROPERTIES
-    OUTPUT_NAME "bambu-engine-${ENGINE_VARIANT}"
+    OUTPUT_NAME "engine-${ENGINE_VARIANT}"
     SUFFIX ".mjs"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out")
 
@@ -30,8 +30,8 @@ set(ENGINE_LINK_OPTIONS
     -sEXPORT_ES6=1
     -sEXPORT_NAME=createBambuEngine
     -sENVIRONMENT=web,worker,node
-    "-sEXPORTED_FUNCTIONS=_engine_slice,_engine_init"
-    -sEXPORTED_RUNTIME_METHODS=FS,ccall,wasmMemory
+    "-sEXPORTED_FUNCTIONS=_engine_run,_engine_slice,_engine_init"
+    -sEXPORTED_RUNTIME_METHODS=FS,ccall,wasmMemory,UTF8ToString
     -sALLOW_MEMORY_GROWTH=1
     -sINITIAL_MEMORY=256MB
     -sMAXIMUM_MEMORY=${ENGINE_MAXIMUM_MEMORY}

@@ -6,14 +6,40 @@
       "input": "inputs/cube.3mf",
       "what": "20 mm cube, P1S 0.4, 0.20mm Standard, full Bambu configuration in the 3MF",
       "plate": 0,
-      "outputs": { "plate_1.gcode": "c7987f4a79990932202cc27363d871b78928ec438d097317977be769e91895cb" }
+      "outputs": {
+        "plate_1.gcode": "c7987f4a79990932202cc27363d871b78928ec438d097317977be769e91895cb"
+      }
     },
     {
       "name": "twocolour",
       "input": "inputs/twocolour.3mf",
       "what": "two 20 mm cubes on AMS slots 1 and 2: flush, prime tower, 100 tool changes",
       "plate": 0,
-      "outputs": { "plate_1.gcode": "fc3b8702cea4fc00d8efee37be5efbbbfe6290d5928fbaf85c87d215ec2a8308" }
+      "outputs": {
+        "plate_1.gcode": "fc3b8702cea4fc00d8efee37be5efbbbfe6290d5928fbaf85c87d215ec2a8308"
+      }
+    },
+    {
+      "name": "multiplate",
+      "input": "inputs/multiplate.3mf",
+      "what": "three plates (two colours; one colour; one colour on the textured plate), --slice 0",
+      "plate": 0,
+      "plates": 3,
+      "outputs": {
+        "plate_1.gcode": "5553c640090259ef0baaeab880721cf0e542129adf7d1c50aca3d48df80fd5c0",
+        "plate_2.gcode": "991b0e967c38c971a06d84b0c8bd50cd3bca631789dbb9d4365111461892e9c3",
+        "plate_3.gcode": "2396e65ce0452d7f2f8f26106b43662523503ebfe98f293542688002e284f865"
+      }
+    },
+    {
+      "name": "multiplate-2",
+      "input": "inputs/multiplate.3mf",
+      "what": "plate 2 of the same project alone, --slice 2",
+      "plate": 2,
+      "plates": 1,
+      "outputs": {
+        "plate_2.gcode": "3af7ecdfb36363b4f43291159424687add7d1e92ff4fc1ab1249ff2b288f004f"
+      }
     }
   ]
 }

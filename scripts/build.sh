@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# One command from an empty machine to dist/: emsdk, dependency sources and prefix, the pinned Bambu Studio
-# release, the engine. Linux (CI: ubuntu-latest) and macOS.
-#   scripts/build.sh                 everything, single-threaded engine (st)
-#   VARIANT=mt scripts/build.sh      the threaded engine (oneTBB)
-# Environment: ORCA_WASM_ROOT (work folder, default ./work), JOBS (default 4), NICE (default 10).
+# One command from an empty machine to dist/: emsdk, dependency sources and prefixes, the pinned Bambu Studio release,
+# the engine, the host scripts and the profiles bundle. Linux (CI: ubuntu-latest) and macOS.
+#   scripts/build.sh                     the single-threaded engine (st)
+#   VARIANTS="st mt" scripts/build.sh    both; mt is the threaded engine (pthreads + oneTBB)
+# Environment: ORCA_WASM_ROOT (work folder, default ./work), DIST (output, default ./dist), JOBS (default 4),
+# NICE (default 10), BAMBU_SRC (default $ORCA_WASM_ROOT/BambuStudio).
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
 source "$HERE/pin.sh"
 export ORCA_WASM_ROOT=${ORCA_WASM_ROOT:-$REPO/work}
-export VARIANT=${VARIANT:-st}
+VARIANTS=${VARIANTS:-${VARIANT:-st}}
+DIST=${DIST:-$REPO/dist}
 export JOBS=${JOBS:-4}
 export EMCC_PIN
+export BAMBU_SRC=${BAMBU_SRC:-$ORCA_WASM_ROOT/BambuStudio}
 NICE=${NICE:-10}
 mkdir -p "$ORCA_WASM_ROOT"
 
@@ -21,19 +24,18 @@ if [[ ! -f $ORCA_WASM_ROOT/emsdk/.emscripten ]]; then
 fi
 
 bash "$REPO/deps/fetch-deps.sh"
-nice -n "$NICE" bash "$REPO/deps/build-deps.sh"
-BAMBU_SRC=${BAMBU_SRC:-$ORCA_WASM_ROOT/BambuStudio} bash "$HERE/get-bambu.sh"
-BAMBU_SRC=${BAMBU_SRC:-$ORCA_WASM_ROOT/BambuStudio} nice -n "$NICE" bash "$HERE/build-engine.sh" bambu_engine
-
-OUT=$ORCA_WASM_ROOT/build-engine-$VARIANT/out
-mkdir -p "$REPO/dist"
-for f in "$OUT"/bambu-engine-$VARIANT.mjs "$OUT"/bambu-engine-$VARIANT.wasm; do
-  cp "$f" "$REPO/dist/"
-  b=$(basename "$f")
-  if command -v brotli >/dev/null; then brotli -f -q 11 -o "$REPO/dist/$b.br" "$REPO/dist/$b"; fi
-  gzip -9 -k -f "$REPO/dist/$b"
+for v in $VARIANTS; do
+  VARIANT=$v nice -n "$NICE" bash "$REPO/deps/build-deps.sh"
 done
-cp "$REPO/tools/slice-node.mjs" "$REPO/dist/"
-(cd "$REPO/dist" && { command -v sha256sum >/dev/null && sha256sum * || shasum -a 256 *; } > SHA256SUMS)
-echo "upstream: bambulab/BambuStudio $BAMBU_TAG ($BAMBU_COMMIT)" > "$REPO/dist/SOURCE.txt"
-ls -la "$REPO/dist"
+bash "$HERE/get-bambu.sh"
+for v in $VARIANTS; do
+  VARIANT=$v nice -n "$NICE" bash "$HERE/build-engine.sh" bambu_engine
+done
+
+mkdir -p "$DIST"
+for v in $VARIANTS; do
+  cp "$ORCA_WASM_ROOT/build-engine-$v/out/engine-$v.mjs" "$ORCA_WASM_ROOT/build-engine-$v/out/engine-$v.wasm" "$DIST/"
+done
+cp "$REPO"/host/*.mjs "$DIST/"
+python3 "$HERE/make-profiles.py" "$BAMBU_SRC" "$DIST/profiles.tar"
+ls -la "$DIST"
