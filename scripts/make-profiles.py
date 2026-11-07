@@ -18,11 +18,13 @@ import os
 import sys
 import tarfile
 
-# The P1, X1 and A1 families. H2D-class printers (two nozzles) need the multi-extruder path the engine does not port.
+# The single-nozzle printers: the P1, X1 and A1 families, and the P2S, H2S and A2L (since 0.1.1). H2D-class printers
+# (two nozzles: H2D, H2D Pro, H2C, X2D) need the multi-extruder path the engine does not port.
 MODELS = [
     "Bambu Lab X1 Carbon", "Bambu Lab X1", "Bambu Lab X1E",
     "Bambu Lab P1P", "Bambu Lab P1S",
     "Bambu Lab A1 mini", "Bambu Lab A1",
+    "Bambu Lab P2S", "Bambu Lab H2S", "Bambu Lab A2L",
 ]
 LISTS = {"machine_list": "machine", "process_list": "process", "filament_list": "filament"}
 

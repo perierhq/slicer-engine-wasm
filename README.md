@@ -15,7 +15,7 @@ A Bambu Studio 3MF project goes in; G-code for every plate (or one) and a result
 - **Projects that only name their presets** (`printer_settings_id`, `print_settings_id`, `filament_settings_id`) and carry the values they change are resolved inside the engine from Bambu's system presets (bundled as `profiles.tar`): each preset flattened as Bambu Studio resolves it (inherits, includes, own keys), the project's values put into the preset that holds each key, then composed the way the command line composes `--load-settings` / `--load-filaments` (printer, process, each filament into its slot, per extruder variant).
 - **Flush volumes:** a project without a `flush_volumes_matrix` gets Bambu's, computed from the filament colours (`FlushVolCalculator`, the GUI's `get_min_flush_volumes`).
 - **Plates:** every plate (`--slice 0`, including its pre-check pass) or plate *n* (`--slice n`), at Bambu Studio's plate origins, with each plate's own settings (bed type, print sequence, ...).
-- **Printers:** the bundled profiles cover the P1, X1 and A1 families (P1P, P1S, X1, X1 Carbon, X1E, A1, A1 mini). Projects with a full configuration for other single-nozzle printers slice too. Multi-nozzle printers (H2D class) are refused.
+- **Printers:** the bundled profiles cover Bambu's single-nozzle printers: the P1, X1 and A1 families (P1P, P1S, X1, X1 Carbon, X1E, A1, A1 mini) and, since 0.1.1, the P2S, H2S and A2L. Projects with a full configuration for other single-nozzle printers slice too. Multi-nozzle printers (H2D class: H2D, H2D Pro, H2C, X2D) are refused.
 
 ## Use it from a page
 
@@ -25,7 +25,7 @@ A release holds:
 |---|---|
 | `engine-st.wasm`, `engine-st.mjs` | the single-threaded engine and its Emscripten glue |
 | `engine-mt.wasm`, `engine-mt.mjs` | the threaded engine (pthreads + oneTBB): needs a cross-origin isolated page (COOP `same-origin`, COEP `require-corp`) |
-| `profiles.tar` | Bambu's system presets for the P1, X1 and A1 families (BBL.json and BBL/, pruned by `scripts/make-profiles.py`) |
+| `profiles.tar` | Bambu's system presets for its single-nozzle printers (P1, X1, A1 families, P2S, H2S, A2L; BBL.json and BBL/, pruned by `scripts/make-profiles.py`) |
 | `bambu-engine-core.mjs` | one slice in a fresh engine instance (`runSlice`): runs wherever the engine runs (a worker, Node) |
 | `bambu-engine.mjs`, `bambu-engine-worker.mjs` | the page API below: a worker per slice, progress, cancel |
 | `manifest.json` | version, upstream tag and commit, patches, every file with size and SHA-256 (format 2, as the app reads it) |
@@ -82,9 +82,11 @@ Compared with Bambu Studio 2.8.2.61's own command line on macOS (arm64), `tests/
 | cube and two colours as the app writes them (preset names, no flush matrix) | byte-identical to the CLI on the same presets flattened (`--load-settings`); flush matrix `0,123,471,0` as Bambu's |
 | four-colour desk plate and support-heavy hook, as the app writes them | config block identical, totals equal to the last digit (time within 0.01 %); a few hundred of 190,000–360,000 lines differ by rounding. Bambu's arm64 and x86-64 builds differ from each other the same way (fused multiply-add) |
 
-The threaded engine produces the same bytes as the single-threaded one on every test. Node on the Mac (11 cores, shared): hook 7.6 s st, 3.5 s mt; desk 3.5 s st, 1.9 s mt; cube 0.4 s.
+The threaded engine produces the same bytes as the single-threaded one on every test.
 
-Sizes: `engine-st.wasm` 9.8 MB (2.2 MB brotli), `engine-mt.wasm` 10.4 MB (2.2 MB brotli), glue 71 / 91 KB, `profiles.tar` 2.5 MB (57 KB brotli; 1,010 files, 1.8 MB of JSON: 79 machine, 141 process, 782 filament presets).
+**0.1.1** changes only `profiles.tar`: the same Bambu Studio 2.8.2.61 profiles with the P2S, H2S and A2L added. Every test above is byte-identical with it (both variants), and so are app-style projects for the A1 mini. The three printers slice from their own presets (`0.20mm Standard @BBL P2S` and so on); there is no 2.8.2.61 command-line reference for them on the test Mac (it has Bambu Studio 2.9.1.70), whose command line, on the same 2.8.2.61 profiles, prints the same filament grams and an estimate 11–13 s longer on a 20 mm cube; it is 9 s longer for the P1S on the same cube, so the gap is the 2.9 engine's, not the profiles'. Node on the Mac (11 cores, shared): hook 7.6 s st, 3.5 s mt; desk 3.5 s st, 1.9 s mt; cube 0.4 s.
+
+Sizes: `engine-st.wasm` 9.8 MB (2.2 MB brotli), `engine-mt.wasm` 10.4 MB (2.2 MB brotli), glue 71 / 91 KB, `profiles.tar` 4.0 MB (1,567 files, 2.8 MB of JSON: 108 machine, 190 process, 1,258 filament presets; 0.1.0's, for the P1, X1 and A1 families only, was 2.5 MB).
 
 ## Build
 
