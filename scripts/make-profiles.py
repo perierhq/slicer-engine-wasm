@@ -18,7 +18,7 @@ import os
 import sys
 import tarfile
 
-# The single-nozzle printers: the P1, X1 and A1 families, and the P2S, H2S and A2L (since 0.1.1). H2D-class printers
+# The single-nozzle printers: the P1, X1 and A1 families, and the P2S, H2S and A2L (since 0.2.0). H2D-class printers
 # (two nozzles: H2D, H2D Pro, H2C, X2D) need the multi-extruder path the engine does not port.
 MODELS = [
     "Bambu Lab X1 Carbon", "Bambu Lab X1", "Bambu Lab X1E",
